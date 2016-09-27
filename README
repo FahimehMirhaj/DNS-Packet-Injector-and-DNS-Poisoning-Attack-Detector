@@ -1,0 +1,393 @@
+Fahimeh Mirhaj
+Network Security Course
+---------------------------------------
+This file contains a brief description about my implementation and example of outputs from the program.
+
+This folder contains the following files:
+	- Makefile: This file contains the appropriate commands to build the program.
+
+		In order to build and run the program, steps are:
+			- Deleting the previous executable files by "make clean" command.
+			- Compiling and Building the program by "make" command. it will generate two executable files, called "dnsinject" and "dnsdetext".
+			- Running the "dnsinject" program as follows:
+				sudo ./dnsinject -i INTERFACE -f FILE_PATH BPF-EXPRESSION
+				EXAMPLE:
+					sudo ./dnsinject -i wlan0 -f ./hostnames.txt udp
+			- Running the "dnsdetect" program as follows:
+				TODO
+
+	[Assumption-0] the libnet and pcap library have been installed on the machine ([on linux machines] by using the "sudo apt-get install libnet1-dev" and "sudo apt-get install libpcap-dev" commands)
+
+	- dnsinject.c: This file contains the implementation of the first part of the assignment. It uses the definitions and constants defined in the file "constants.h". This file contains the several functions, global variables and a main function which is described as bellow:
+		- the four global variables:
+
+			// number of hostNames in the hostNames file
+			int forgedHostNames = 0;
+			
+			// spoofed/fake IPs in the hostNames file
+			char ips[MAX_FORGED_HOSTNAMES][IP_MAX_LENGTH];
+
+			// hostnames to be mapped to spoofed/fake IPs
+			char hostNames[MAX_FORGED_HOSTNAMES][MAX_HOSTNAME_LENGTH]; 
+
+			// interface to be captured
+			char *interface = NULL;
+
+		- function readHostNamesFile(char *hostNamesFile): If we have "-f" option, this function reads the file and fills the two arrays ips and hostNames (global variables) {For uniqueness of the rest of the code, it adds "www." to the beginning of the hostNames which don't have "www." prefix}
+
+		For example, if we have the following content in the hostName file:
+			10.6.6.6      foo.example.com
+			10.6.6.6      bar.example.com
+			192.168.66.6  www.cs.stonybrook.edu
+			122.22.12.22  gmail.com
+
+		then, the ips and hostNames global variables will be filled as follows:
+		ips[0] = "10.6.6.6", hostNames[0] = "www.foo.example.com"
+		ips[1] = "10.6.6.6", hostNames[1] = "www.bar.example.com"
+		ips[2] = "192.168.66.6", hostNames[2] = "www.cs.stonybrook.edu"
+		ips[3] = "122.22.12.22", hostNames[3] = "www.gmail.com"
+		and global variable forgedHostNames will have value 4.
+
+		This function is used in the main function (in case we have "-f" option).
+
+		- function process_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet): 
+			This function gets called per captured packet. It takes the IP portion of the packet and checks whether it's transport layer protocol is UDP or not. If it is not UDP protocol, it simply ignores the packet. If it's transport layer protocol is UDP, it extracts the UDP portion and checks the destination port of the packet. If it is not 53, then again, it can't be DNS-protocol related packet and the program ignores the packet. If it's dest port is 53, it is a DNS-protocol related packet. However, one more check is required to be sure that it is a query type A. If the query is not of type A, the function ignores such a packet (lines 232 - 237). If it is a query of type A, by using the dn_expand() function, it takes out the hostName to be queried and adds "www." prefix. Then, if we had "-f" option, (lines 255 - 259), the program checks to see whether it needs to inject spoofed DNS reply (in other words, it checks whether the requested hostName is among the hostNames listed in the file or not). Else (if we didn't have "-f" option), the program extracts the ip address of the interface (on the local machine), it listens to and considers it as the fake ip_address (lines 268 - 285). Then, by using several functions (to be described), it injects the spoofed DNS reply. First, by using the function libnet_name2addr4(), it gets the address in network order, then, it creates the spoofed DNS response_payload (lines 306 - 314). Then, it initializes the libnet by calling libnet_init(LIBNET_RAW4, ...) function call {we consider LIBNET_RAW4 as the first argument, because the program is injecting at the Internet layer}. Then, it creates the required headers (from top to bottom, i.e., dns_header (lines 323), udp_header (lines 332) and ip_header (lines 340)) and finally completes injecting the packet by calling the function libnet_write(handler) at line 374 (In making the headers, the captured information is used. E.g., in making the dns header, it uses the captured DNS ID (line 324) Or in making the udp header, the source port and destination port put in the header are indeed the dest port and source port of the captured packet). Then, for the resource deallocation purposes, it destroys the created libnet handler at line 358.
+
+		- function main:
+			This function is the starting point of the dnsinject program. It gets and parses the program arguments (-i, -f and BPFExpression arguments). This function is 90% the same as the second assignment (as it tries to open the chosen (or default) interface to capture the packets and calls the function process_packet per captured packet).
+
+	// Here is some sample execution of the program:
+		SAMPE EXECUTION #1 (without hostNames file):
+			STEP (0)- running the virtual machine and running the following command (for DNS query). This is the result I got WITHOUT running the dnsinject program:
+
+				$ dig @8.8.8.8 bbc.com
+
+				; <<>> DiG 9.8.1-P1 <<>> @8.8.8.8 bbc.com
+				; (1 server found)
+				;; global options: +cmd
+				;; Got answer:
+				;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 55576
+				;; flags: qr rd ra; QUERY: 1, ANSWER: 4, AUTHORITY: 0, ADDITIONAL: 0
+
+				;; QUESTION SECTION:
+				;bbc.com.            IN    A
+
+				;; ANSWER SECTION:
+				bbc.com.        223    IN    A    212.58.246.79
+				bbc.com.        223    IN    A    212.58.244.22
+				bbc.com.        223    IN    A    212.58.246.78
+				bbc.com.        223    IN    A    212.58.244.23
+
+				;; Query time: 25 msec
+				;; SERVER: 8.8.8.8#53(8.8.8.8)
+				;; WHEN: Sun May  8 16:57:57 2016
+				;; MSG SIZE  rcvd: 89
+
+			STEP (I)- running dnsinject program in the host machine and then, running the command "dig @8.8.8.8 bbc.com" on the virtual machine.
+
+			Running on the host machine:
+
+				$ sudo ./dnsinject -i wlan0
+				process_packet::Log::Spoofed DNS response injected for the following DNS-request:
+				(from 130.245.165.112:49738 -> 130.245.165.112:53), asking for hostName = www.bbc.com, the fake IP address is 130.245.165.112.
+
+
+			NOTE: 130.245.165.112 is the IP address of the interface (wlan0) which dnsinject program is listen to.
+
+			NOW, Result of running "dig @8.8.8.8 bbc.com" on the virtual machine is (for DNS query):
+
+				$ dig @8.8.8.8 bbc.com
+
+				; <<>> DiG 9.8.1-P1 <<>> @8.8.8.8 bbc.com
+				; (1 server found)
+				;; global options: +cmd
+				;; Got answer:
+				;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 21439
+				;; flags: qr aa rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0
+
+				;; QUESTION SECTION:
+				;bbc.com.            IN    A
+
+				;; ANSWER SECTION:
+				bbc.com.        4    IN    A    130.245.165.112
+
+				;; Query time: 1 msec
+				;; SERVER: 8.8.8.8#53(8.8.8.8)
+				;; WHEN: Sun May  8 16:59:09 2016
+				;; MSG SIZE  rcvd: 41
+
+
+		SAMPLE EXECUTION #2 (with hostNames file):
+			Lets assume that the hostNames file contains the following content:
+				10.6.6.6      foo.example.com
+				10.6.6.6      bar.example.com
+				192.168.66.6  www.cs.stonybrook.edu
+				122.22.12.22  gmail.com
+
+			STEP (I)- Running the virtual machine and running the following command (for DNS query {for gmail.com}) - WITHOUT having the dnsinject program UP:
+				
+			$ dig @8.8.8.8 gmail.com
+
+			; <<>> DiG 9.8.1-P1 <<>> @8.8.8.8 gmail.com
+			; (1 server found)
+			;; global options: +cmd
+			;; Got answer:
+			;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 56969
+			;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0
+
+			;; QUESTION SECTION:
+			;gmail.com.            IN    A
+
+			;; ANSWER SECTION:
+			gmail.com.        296    IN    A    172.217.4.69
+
+			;; Query time: 56 msec
+			;; SERVER: 8.8.8.8#53(8.8.8.8)
+			;; WHEN: Sun May  8 17:00:54 2016
+			;; MSG SIZE  rcvd: 43
+
+
+			STEP (II)- Running dnsinject program in the machine and then, running the second DNS query {for gmail.com}:
+				
+			$ sudo ./dnsinject -i wlan0 -f ./hostnames.txt
+			process_packet::Log::Spoofed DNS response injected for the following DNS-request:
+			(from 130.245.165.112:50149 -> 130.245.165.112:53), asking for hostName = www.gmail.com, the fake IP address is 122.22.12.22.
+
+
+			NOTE: 122.22.12.22 is the fake IP determined (for gmail.com) in the hostNames file.
+
+			Now, this is what we get on the virtual machine if we run the command "dig @8.8.8.8 gmail.com":
+
+			$ dig @8.8.8.8 gmail.com
+
+			; <<>> DiG 9.8.1-P1 <<>> @8.8.8.8 gmail.com
+			; (1 server found)
+			;; global options: +cmd
+			;; Got answer:
+			;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 30219
+			;; flags: qr aa rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0
+
+			;; QUESTION SECTION:
+			;gmail.com.            IN    A
+
+			;; ANSWER SECTION:
+			gmail.com.        4    IN    A    122.22.12.22
+
+			;; Query time: 4 msec
+			;; SERVER: 8.8.8.8#53(8.8.8.8)
+			;; WHEN: Sun May  8 17:02:10 2016
+			;; MSG SIZE  rcvd: 43
+
+		SAMPLE EXECUTION #3 (with hostNames file):
+			Now, lets test for the hostName which is not inside the hostNames file (for example bbc.com):
+
+			STEP (I)- Running the virtual machine and running the following command (for DNS query {for bbc.com}) - WITHOUT having the dnsinject program UP:
+
+			$ dig @8.8.8.8 bbc.com
+
+			; <<>> DiG 9.8.1-P1 <<>> @8.8.8.8 bbc.com
+			; (1 server found)
+			;; global options: +cmd
+			;; Got answer:
+			;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 13597
+			;; flags: qr rd ra; QUERY: 1, ANSWER: 4, AUTHORITY: 0, ADDITIONAL: 0
+
+			;; QUESTION SECTION:
+			;bbc.com.            IN    A
+
+			;; ANSWER SECTION:
+			bbc.com.        92    IN    A    212.58.246.79
+			bbc.com.        92    IN    A    212.58.244.22
+			bbc.com.        92    IN    A    212.58.246.78
+			bbc.com.        92    IN    A    212.58.244.23
+
+			;; Query time: 31 msec
+			;; SERVER: 8.8.8.8#53(8.8.8.8)
+			;; WHEN: Sun May  8 17:03:31 2016
+			;; MSG SIZE  rcvd: 89
+
+			STEP (II)- Running dnsinject program in the machine and then, running the second DNS query {for bbc.com}:
+
+			$ sudo ./dnsinject -i wlan0 -f ./hostnames.txt
+			process_packet::Debug::The hostName (www.bbc.com) is not among the hostNames determined in the file. So, it is ignored.
+
+			Now, this is what we get on the virtual machine if we run the command "dig @8.8.8.8 bbc.com":
+
+			$ dig @8.8.8.8 bbc.com
+
+			; <<>> DiG 9.8.1-P1 <<>> @8.8.8.8 bbc.com
+			; (1 server found)
+			;; global options: +cmd
+			;; Got answer:
+			;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 32205
+			;; flags: qr rd ra; QUERY: 1, ANSWER: 4, AUTHORITY: 0, ADDITIONAL: 0
+
+			;; QUESTION SECTION:
+			;bbc.com.            IN    A
+
+			;; ANSWER SECTION:
+			bbc.com.        291    IN    A    212.58.246.79
+			bbc.com.        291    IN    A    212.58.244.22
+			bbc.com.        291    IN    A    212.58.246.78
+			bbc.com.        291    IN    A    212.58.244.23
+
+			;; Query time: 27 msec
+			;; SERVER: 8.8.8.8#53(8.8.8.8)
+			;; WHEN: Sun May  8 17:04:04 2016
+			;; MSG SIZE  rcvd: 89
+
+	- dnsdetect.c
+		This file contains the implementation of the second part of the assignment. It uses the definitions and constans defined in the file "constants.h". This file contains the several functions, global variables and a main function which is described as bellow:
+
+		- the four global variables:
+
+			// number of DNS responses we have received so far
+			int totalDNSResponseReceived = 0;
+			
+			// The array dnsResponses contains the information about each DNS response we have received
+			struct DNSResponseInfo dnsResponses[DNS_RESPONSES_MAX];
+
+			// interface to be captured
+			char *interface = NULL;
+
+
+		- void process_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet):
+			This function gets called per DNS-response packet captured (DNS-response means we filter all the packets which are not UDP or their udp->source_port is not 53). It extracts all the answer-IP addresses inside the DNS-response packet and compares the id, hostName (to be resolved) with all the previous DNS response packets observed, which have been kept inside the array dnsResponses (in a for loop at lines 313 - 320). If there is any other previous DNS response with the same id and hostName, then the function isThereAnyCommon() is called to check whether there is a common answer-IP address in both DNS responses [this further check is required due to round robin DNS load balancing. If there is no common answer-IP address, then, it is recognized as an attack and all the information of the attack is being printed to the user (including the attack detection time, TXID (which is the DNS id), hostName (to be resolved) and list of all the IP addresses from both DNS-response packets. Otherwise (if the new packet doesn't involve in any attack), all its information is stored in the array dnsResponses for future possible attack detection.
+
+		- int isThereAnyCommon(char answers1[][IP_MAX_LENGTH], int answers1_count, struct RES_RECORD answers[], int answers2_count):
+            This function is used to check whether there is any answer-IP in common between the answers stored in the 2D character array answers1 and answers. If there is, it returns 1 (line 425) and if there is not, it returns 0.
+
+
+		- const char *timestamp_string(struct timeval ts):
+			This function returns the timestamp of the packet. Used for printing the informatio of the time of the attack.
+
+
+		- u_char* readName(unsigned char* reader,unsigned char* buffer,int* count):
+			This function takes out the hostName inside the answer resource record of the DNS response. This function is used in the process_packet function.
+
+
+	// Here is some sample execution of the program:
+		SAMPE EXECUTION #1 (without hostNames file):
+			STEP (I)- running dnsinject program in the host machine. Then, running the dnsdetect program in the virtual machine program, and then, running the command "dig @8.8.8.8 bbc.com" on the virtual machine too. Here are the results, I got:
+
+			ON HOST MACHINE WHICH IS RUNNING dnsinject PROGRAM:
+				$ sudo ./dnsinject -i wlan0
+				process_packet::Log::Spoofed DNS response injected for the following DNS-request:
+				(from 130.245.165.112:53161 -> 130.245.165.112:53), asking for hostName = www.bbc.com, the fake IP address is 130.245.165.112.
+
+				NOTE: 130.245.165.112 is the IP address of the interface (wlan0) which dnsinject program is listen to.
+
+			ON VIRTUAL MACHINE (TERMINAL 1) WHICH IS RUNNING dnsdetect PROGRAM:
+				$ sudo ./dnsdetect -i eth1 
+				2016-05-08 17:09:52.603452 DNS poisoning attempt
+				TXID 30297 Request www.bbc.com
+				Answer1 [130.245.165.112   ]
+				Answer2 [212.58.246.79   212.58.244.22   212.58.246.78   212.58.244.23   ]
+				--------------------------
+
+			ON VIRTUAL MACHINE (TERMINAL 2) WHICH IS running the "dig" command:
+				$ dig @8.8.8.8 bbc.com
+
+				; <<>> DiG 9.8.1-P1 <<>> @8.8.8.8 bbc.com
+				; (1 server found)
+				;; global options: +cmd
+				;; Got answer:
+				;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 22902
+				;; flags: qr aa rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0
+
+				;; QUESTION SECTION:
+				;bbc.com.            IN    A
+
+				;; ANSWER SECTION:
+				bbc.com.        4    IN    A    130.245.165.112
+
+				;; Query time: 4 msec
+				;; SERVER: 8.8.8.8#53(8.8.8.8)
+				;; WHEN: Sun May  8 17:09:52 2016
+				;; MSG SIZE  rcvd: 41
+
+		SAMPLE EXECUTION #2 (with hostNames file):
+
+			Lets assume that the hostNames file contains the following content:
+				10.6.6.6      foo.example.com
+				10.6.6.6      bar.example.com
+				192.168.66.6  www.cs.stonybrook.edu
+				122.22.12.22  gmail.com
+
+
+			We are going to test (dig) two different hostNames, one ubuntu.com (which is not specified in the hostNames file, hence ignored and not spoofed and not detected by the dnsdetect as an attack) and gmail.com (which is specified in the hostNames file).
+
+			ON HOST MACHINE WHICH IS RUNNING dnsinject PROGRAM:
+				$ sudo ./dnsinject -i wlan0 -f ./hostnames.txt
+				process_packet::Debug::The hostName (www.ubuntu.com) is not among the hostNames determined in the file. So, it is ignored.
+				process_packet::Log::Spoofed DNS response injected for the following DNS-request:
+				(from 130.245.165.112:46356 -> 130.245.165.112:53), asking for hostName = www.gmail.com, the fake IP address is 122.22.12.22.
+
+			ON VIRTUAL MACHINE (TERMINAL 1) WHICH IS RUNNING dnsdetect PROGRAM:
+				$ sudo ./dnsdetect -i eth1 
+				2016-05-08 17:14:30.920737 DNS poisoning attempt
+				TXID 13381 Request www.gmail.com
+				Answer1 [122.22.12.22   ]
+				Answer2 [172.217.4.69   ]
+				--------------------------
+
+
+			ON VIRTUAL MACHINE (TERMINAL 2) WHICH IS running the "dig" command:
+				
+				$ dig @8.8.8.8 ubuntu.com
+
+				; <<>> DiG 9.8.1-P1 <<>> @8.8.8.8 ubuntu.com
+				; (1 server found)
+				;; global options: +cmd
+				;; Got answer:
+				;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 30282
+				;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0
+
+				;; QUESTION SECTION:
+				;ubuntu.com.            IN    A
+
+				;; ANSWER SECTION:
+				ubuntu.com.        577    IN    A    91.189.94.40
+
+				;; Query time: 26 msec
+				;; SERVER: 8.8.8.8#53(8.8.8.8)
+				;; WHEN: Sun May  8 17:14:27 2016
+				;; MSG SIZE  rcvd: 44
+
+				$ dig @8.8.8.8 gmail.com
+
+				; <<>> DiG 9.8.1-P1 <<>> @8.8.8.8 gmail.com
+				; (1 server found)
+				;; global options: +cmd
+				;; Got answer:
+				;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 17716
+				;; flags: qr aa rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0
+
+				;; QUESTION SECTION:
+				;gmail.com.            IN    A
+
+				;; ANSWER SECTION:
+				gmail.com.        4    IN    A    122.22.12.22
+
+				;; Query time: 1 msec
+				;; SERVER: 8.8.8.8#53(8.8.8.8)
+				;; WHEN: Sun May  8 17:14:30 2016
+				;; MSG SIZE  rcvd: 43
+
+		SAMPLE EXUECTION #3:
+			Inspecting the DNS attack from the file.
+			tracefile.pcap file contains the attack made for resolving the IP address of www.gmail.com (on the hacker side, I used the command "sudo ./dnsinject -i wlan0 -f ./hostnames.txt").
+
+			Now, if we run the command:
+
+			$ sudo ./dnsdetect -r tracefile.pcap
+
+			we get:
+
+			2016-05-08 22:59:55.712697 DNS poisoning attempt
+			TXID 55209 Request www.gmail.com
+			Answer1 [122.22.12.22   ]
+			Answer2 [172.217.0.37   ]
+			--------------------------
+
+	- tracefile.pcap is a pcap trace of one of the successful attack instances generated using my dnsinject tool (I ran the command "sudo ./dnsinject -i wlan0 -f ./hostnames.txt" on the hacker side (host machine) and I ran dig @8.8.8.8 gmail.com on the (victim) virtual machine).
